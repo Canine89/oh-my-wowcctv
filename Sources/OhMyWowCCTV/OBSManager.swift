@@ -315,8 +315,8 @@ final class OBSManager {
     private var captureWatchTask: Task<Void, Never>?
     private var appliedSignature: String?
     private var appliedKind: CaptureKind = .display
-    /// 창 캡처가 프레임을 못 주는(독점 전체 화면 등) 창 서명은 디스플레이 캡처로 대체한다
-    private var fallbackSignatures = Set<String>()
+    /// 창 캡처가 안 되면 잠시 디스플레이 캡처로 대체하되, 이 시각 이후엔 다시 창 캡처를 시도한다
+    private var retryWindowCaptureAt = Date.distantPast
     private var zeroFrameTicks = 0
     private var lastCanvas: (Int, Int)?
 
@@ -339,6 +339,11 @@ final class OBSManager {
                         }
                         if Prefs.fitCanvasToWindow { await self.fitCanvasToSource(window: info) }
                         await self.selfHealIfNoFrames(info)
+                        // 디스플레이 캡처로 대체된 상태면 15초마다 창 캡처 복귀를 시도한다
+                        if self.appliedKind == .display, Prefs.sceneOptions.capture == .application,
+                           !info.isFullscreenSized, Date() >= self.retryWindowCaptureAt {
+                            await self.refreshCapture(info, reason: "창 캡처 복귀 시도")
+                        }
                     } else if !waitedForWindow {
                         waitedForWindow = true
                         self.log("WoW 창이 뜨기를 기다리는 중…")
@@ -354,7 +359,7 @@ final class OBSManager {
         captureWatchTask?.cancel()
         captureWatchTask = nil
         appliedSignature = nil
-        fallbackSignatures.removeAll()
+        retryWindowCaptureAt = .distantPast
         zeroFrameTicks = 0
     }
 
@@ -363,7 +368,7 @@ final class OBSManager {
         Task { [weak self] in
             guard let self else { return }
             if let info = WoWWindowLocator.find(bundleID: wowBundleID) {
-                self.fallbackSignatures.remove(info.signature) // 수동 요청은 창 캡처부터 다시 시도
+                self.retryWindowCaptureAt = .distantPast // 수동 요청은 창 캡처부터 다시 시도
                 await self.refreshCapture(info, reason: "수동 갱신")
             } else {
                 await self.applyCaptureSettings(window: nil, reason: "수동 갱신 (WoW 창 없음)")
@@ -382,7 +387,7 @@ final class OBSManager {
         return (Int(sw), Int(sh))
     }
 
-    /// 창 캡처인데 소스가 프레임을 안 주면(0 크기) 디스플레이 캡처로 대체한다
+    /// 창 캡처인데 소스가 프레임을 안 주면(0 크기) 창 캡처를 다시 시도하고, 그래도 안 되면 디스플레이 캡처로 대체한다
     private func selfHealIfNoFrames(_ info: WoWWindowInfo) async {
         guard appliedKind == .window else { zeroFrameTicks = 0; return }
         let sz = await sourceSize()
@@ -390,10 +395,40 @@ final class OBSManager {
         zeroFrameTicks += 1
         if zeroFrameTicks >= 2 {
             zeroFrameTicks = 0
-            fallbackSignatures.insert(info.signature)
-            log("창 캡처가 프레임을 못 받아 디스플레이 캡처로 대체합니다 (전체 화면 모드일 수 있음)")
-            await refreshCapture(info, reason: "대체")
+            log("창 캡처 프레임이 끊겨 다시 잡습니다")
+            await refreshCapture(info, reason: "프레임 없음")
         }
+    }
+
+    /// OBS 의 창 캡처 스트림은 첫 시도에 안 잡히는 경우가 있다(목록 캐시/스트림 생성 타이밍).
+    /// 창 목록을 새로 만들고 → 디스플레이로 리셋 → 창 캡처 설정 → 프레임 확인을 최대 4번 반복한다.
+    private func applyWindowCapture(_ w: WoWWindowInfo, showCursor: Bool) async -> Bool {
+        let video = OBSSceneWriter.videoSourceName
+        for attempt in 1...4 {
+            do {
+                // OBS 가 공유 가능 창 목록을 다시 만들게 한다
+                _ = try? await client.request("GetInputPropertiesListPropertyItems", data: ["inputName": video, "propertyName": "window"], timeout: 5)
+                var reset: [String: Any] = ["type": 0, "show_cursor": showCursor, "hide_obs": true]
+                if let uuid = w.displayUUID { reset["display_uuid"] = uuid }
+                _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": reset, "overlay": false])
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                var win: [String: Any] = ["type": 1, "window": w.windowID, "show_empty_names": false, "show_hidden_windows": true,
+                                          "show_cursor": showCursor, "hide_obs": true]
+                if let uuid = w.displayUUID { win["display_uuid"] = uuid }
+                _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": win, "overlay": false])
+                // 최대 3초 동안 프레임(소스 크기)이 생기는지 본다
+                for _ in 0..<6 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if let sz = await sourceSize(), sz.0 >= 100, sz.1 >= 100 {
+                        if attempt > 1 { log("창 캡처 \(attempt)번째 시도에 성공") }
+                        return true
+                    }
+                }
+            } catch {
+                log("창 캡처 설정 실패: \(error.localizedDescription)")
+            }
+        }
+        return false
     }
 
     // MARK: 마이크
@@ -585,33 +620,33 @@ final class OBSManager {
         let video = OBSSceneWriter.videoSourceName
         let audio = OBSSceneWriter.audioSourceName
         let bundle = OBSSceneWriter.wowBundleID
-        let useWindow = opts.capture == .application && window != nil && !fallbackSignatures.contains(window!.signature)
+        let wantWindow = opts.capture == .application && window != nil && !(window!.isFullscreenSized) && Date() >= retryWindowCaptureAt
         do {
-            if useWindow, let w = window {
-                // 진짜 창 캡처. 낡은 창 ID 로 멈춘 스트림을 확실히 새로 잡으려고 window 를 0 으로 뒀다 다시 넣는다.
-                _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": ["type": 1, "window": 0], "overlay": true])
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                _ = try await client.request("SetInputSettings", data: [
-                    "inputName": video,
-                    "inputSettings": ["type": 1, "window": w.windowID, "show_empty_names": false, "show_hidden_windows": true, "show_cursor": opts.showCursor, "hide_obs": true],
-                    "overlay": true,
-                ])
-                appliedKind = .window
-                log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · 창 캡처 (id \(w.windowID))")
-                onCaptureHint?(nil)
-            } else {
-                // 디스플레이 캡처 (디스플레이 고정 모드, 또는 창 캡처 대체)
+            var usedWindow = false
+            if wantWindow, let w = window {
+                usedWindow = await applyWindowCapture(w, showCursor: opts.showCursor)
+                if usedWindow {
+                    appliedKind = .window
+                    log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · 창 캡처 (id \(w.windowID))")
+                    onCaptureHint?(nil)
+                } else {
+                    retryWindowCaptureAt = Date().addingTimeInterval(15)
+                    log("창 캡처가 프레임을 못 받아 잠시 디스플레이 캡처로 대체합니다 (15초 후 다시 시도)")
+                }
+            }
+            if !usedWindow {
+                // 디스플레이 캡처 (디스플레이 고정 모드, 전체 화면, 또는 창 캡처 임시 대체)
                 var final: [String: Any] = ["show_cursor": opts.showCursor, "hide_obs": true, "type": 0]
                 if let uuid = window?.displayUUID { final["display_uuid"] = uuid }
                 _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": final, "overlay": true])
                 appliedKind = .display
-                let why = (opts.capture == .application) ? "디스플레이 캡처 + 창 영역 크롭 (창 캡처 대체)" : "디스플레이 캡처"
                 if let w = window {
+                    let why = opts.capture == .display ? "디스플레이 캡처" : (w.isFullscreenSized ? "전체 화면 → 디스플레이 캡처" : "디스플레이 캡처 + 창 영역 크롭 (임시 대체)")
                     log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · \(why)")
+                    onCaptureHint?(opts.capture == .application && !w.isFullscreenSized ? "창 캡처가 잠시 안 돼 디스플레이를 잘라 쓰는 중입니다. 자동으로 창 캡처 복귀를 시도합니다." : nil)
                 } else {
                     log("캡처 설정 적용 (\(reason))")
                 }
-                onCaptureHint?(opts.capture == .application ? "창 캡처가 안 돼 디스플레이를 잘라 녹화합니다. WoW 그래픽을 '창(모드)' 로 두면 창만 정확히 잡힙니다." : nil)
             }
 
             // 오디오는 처음 한 번만 다시 잡는다 (매번 하면 소리가 끊긴다)
