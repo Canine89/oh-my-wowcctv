@@ -124,3 +124,21 @@ Tests/                      파서 / 감시기 테스트
 - 녹화 중 WoW 가 종료되면 녹화를 멈춘 뒤 OBS 를 종료합니다.
 - WoW 를 켤 때 OBS 가 이미 실행 중이면 그 OBS 에 붙어 CCTV 프로필로 전환하고, WoW 가 꺼지면 원래 프로필로 되돌립니다. 방송 중이면 전환하지 않고 현재 장면을 그대로 녹화합니다.
 - OBS 창을 보고 싶으면 메뉴의 "OBS 창 보기"를 누르세요.
+
+
+## 배포 (DMG / 공증)
+
+Developer ID 서명 + 공증된 DMG 를 만든다:
+
+```bash
+scripts/notarize-release.sh              # Release 빌드 + Developer ID 서명 + 서명된 DMG (dist/)
+NOTARY_PROFILE=<프로파일> scripts/notarize-release.sh --notarize   # 위 + Apple 공증 + 스테이플
+```
+
+공증에는 유효한 notarytool 자격 증명(앱 전용 암호 또는 App Store Connect API 키)이 필요하다.
+앱 전용 암호는 appleid.apple.com 에서 발급해 아래처럼 저장한다:
+
+```bash
+xcrun notarytool store-credentials <프로파일> \
+  --apple-id <APPLE_ID> --team-id M7NU9F8CZN --password <앱-전용-암호>
+```
