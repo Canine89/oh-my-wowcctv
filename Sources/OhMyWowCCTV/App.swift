@@ -53,9 +53,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         RecordingCoordinator.shared.shutdownForAppTermination()
     }
+
+    /// 메뉴바 앱이라 창이 없다. 사용자가 Finder/Launchpad 에서 다시 열면(이미 실행 중) 반응이 없어 보이므로
+    /// 그때는 CCTV 모니터 창을 열어 "켜져 있다"는 걸 보여 준다.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NotificationCenter.default.post(name: .cctvOpenMonitor, object: nil)
+        return true
+    }
 }
 
 /// 메뉴바 아이콘. 환경(openWindow)에 접근할 수 있는 뷰라서 개발용 자동 열기도 여기서 처리한다.
+extension Notification.Name {
+    static let cctvOpenMonitor = Notification.Name("cctvOpenMonitor")
+}
+
 struct MenuBarLabel: View {
     @EnvironmentObject private var coordinator: RecordingCoordinator
     @Environment(\.openWindow) private var openWindow
@@ -64,10 +75,20 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(nsImage: coordinator.menuBarImage)
+            .onReceive(NotificationCenter.default.publisher(for: .cctvOpenMonitor)) { _ in
+                openWindow(id: "monitor")
+                NSApp.activate(ignoringOtherApps: true)
+            }
             .onAppear {
                 guard !didAutoOpen else { return }
                 didAutoOpen = true
                 let env = ProcessInfo.processInfo.environment
+                // 사용자가 처음 직접 실행했을 때는 모니터 창을 한 번 열어 준다 (로그인 자동 실행 때는 조용히)
+                let ud = UserDefaults.standard
+                if !ud.bool(forKey: "hasShownMonitorOnce"), env["CCTV_SIMULATE_WOW"] == nil {
+                    ud.set(true, forKey: "hasShownMonitorOnce")
+                    openWindow(id: "monitor"); NSApp.activate(ignoringOtherApps: true)
+                }
                 if env["CCTV_OPEN_MONITOR"] == "1" { openWindow(id: "monitor"); NSApp.activate(ignoringOtherApps: true) }
                 if env["CCTV_OPEN_SETTINGS"] == "1" { NSApp.activate(ignoringOtherApps: true); openSettings() }
                 if let dir = env["CCTV_SNAPSHOT_DIR"], let secs = env["CCTV_SNAPSHOT_AFTER"].flatMap(Double.init) {

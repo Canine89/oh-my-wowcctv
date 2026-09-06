@@ -117,7 +117,7 @@ struct MonitorView: View {
     }
 
     private var placeholderText: String {
-        if !c.obsRunning { return "OBS 가 꺼져 있습니다.\nWoW 를 켜면 자동으로 켜집니다." }
+        if !c.obsRunning { return "CCTV 가 메뉴바에서 대기 중입니다 (오른쪽 위 카메라 아이콘).\nWoW 를 켜면 OBS 를 자동으로 띄우고 여기에 게임 화면이 나옵니다." }
         if c.obsState != .connected { return "OBS 에 연결하는 중…" }
         return m.previewError ?? "미리보기를 불러오는 중…"
     }
