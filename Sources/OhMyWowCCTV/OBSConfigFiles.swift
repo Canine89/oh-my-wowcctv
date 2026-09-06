@@ -388,20 +388,11 @@ enum OBSSceneWriter {
         return json
     }
 
-    /// WoW 창 모드는 응용 프로그램 캡처(번들 ID 기반, 창 ID 불필요)를 쓴다.
-    /// 프레임은 디스플레이 크기로 나오고 그 안에 WoW 창만 그려지므로, 앱이 창 영역만큼 잘라내 1:1 로 맞춘다.
-    /// (SCK 창 캡처는 창 ID 를 못 찾는 경우가 잦아 쓰지 않는다: "Invalid target window ID")
+    /// WoW 는 Metal 로 렌더링해서 macOS ScreenCaptureKit 의 창/앱 필터가 화면을 못 가져오는 경우가 많다
+    /// (창 캡처는 "Invalid target window ID", 앱 캡처는 검은 화면). 그래서 항상 디스플레이 캡처를 쓰고,
+    /// "WoW 창" 모드에선 앱이 WoW 창 영역만큼 프레임을 잘라내 1:1 로 만든다.
     static func videoSettings(_ o: OBSSceneOptions, windowID: Int? = nil) -> [String: Any] {
-        var s: [String: Any] = ["show_cursor": o.showCursor, "hide_obs": true, "show_empty_names": false, "show_hidden_windows": true]
-        switch o.capture {
-        case .application:
-            s["type"] = 2
-            s["application"] = wowBundleID
-        case .display:
-            s["type"] = 0
-            // display_uuid 를 비워 두면 OBS 가 주 디스플레이를 고른다
-        }
-        return s
+        ["show_cursor": o.showCursor, "hide_obs": true, "type": 0]
     }
 
     /// 사용자가 원래 OBS 에서 쓰던 마이크 장치 (기본 장면 모음의 마이크/Aux). 없으면 nil.

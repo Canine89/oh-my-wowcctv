@@ -44,8 +44,8 @@ final class OBSConfigFilesTests: XCTestCase {
         XCTAssertEqual(sources.map { $0["id"] as? String }, ["scene", "screen_capture", "sck_audio_capture"])
         let video = sources[1]
         let vs = try XCTUnwrap(video["settings"] as? [String: Any])
-        XCTAssertEqual(vs["type"] as? Int, 2)
-        XCTAssertEqual(vs["application"] as? String, "com.blizzard.worldofwarcraft")
+        // WoW(Metal)는 SCK 창/앱 캡처가 안 잡혀 항상 디스플레이 캡처(type 0)를 쓰고 앱이 창 영역을 크롭한다
+        XCTAssertEqual(vs["type"] as? Int, 0)
         XCTAssertEqual(video["muted"] as? Bool, true)
         // 장면 아이템이 비디오 소스 uuid 를 가리킨다
         let items = try XCTUnwrap((sources[0]["settings"] as? [String: Any])?["items"] as? [[String: Any]])
@@ -70,7 +70,7 @@ final class OBSConfigFilesTests: XCTestCase {
         XCTAssertTrue(items.contains { $0["source_uuid"] as? String == audio["uuid"] as? String })
     }
 
-    func testPatchSwitchesToDisplayAndRemovesMic() throws {
+    func testPatchRemovesMicAndDisablesGameAudio() throws {
         let fresh = OBSSceneWriter.fresh(options: .init(capture: .application, gameAudio: true, mic: true, showCursor: true))
         let patched = OBSSceneWriter.patch(fresh, options: .init(capture: .display, gameAudio: false, mic: false, showCursor: false))
         XCTAssertNil(patched["AuxAudioDevice1"])

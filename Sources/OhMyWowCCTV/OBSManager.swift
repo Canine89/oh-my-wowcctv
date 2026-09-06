@@ -467,39 +467,27 @@ final class OBSManager {
         let audio = OBSSceneWriter.audioSourceName
         let bundle = OBSSceneWriter.wowBundleID
         do {
-            // 창이 디스플레이를 통째로 덮으면(독점 전체 화면 포함) 창 캡처가 비어 있으므로 그 디스플레이를 캡처한다
-            let useDisplay = opts.capture == .display || (window?.isFullscreenSized ?? false)
-            var final: [String: Any]
-            if useDisplay {
-                final = OBSSceneWriter.videoSettings(OBSSceneOptions(capture: .display, gameAudio: opts.gameAudio, mic: opts.mic, showCursor: opts.showCursor))
-            } else {
-                final = OBSSceneWriter.videoSettings(opts, windowID: window?.windowID)
-            }
+            // 항상 디스플레이 캡처. WoW 가 있는 디스플레이를 잡고, 잘라내기는 fitCanvasToSource 가 한다.
+            var final: [String: Any] = ["show_cursor": opts.showCursor, "hide_obs": true, "type": 0]
             if let uuid = window?.displayUUID { final["display_uuid"] = uuid }
-            // 캡처 종류를 한 번 바꿨다가 최종 설정을 적용해 OBS 가 대상 목록을 새로 읽게 한다
-            let kickType = (final["type"] as? Int) == 2 ? 0 : 2
-            _ = try await client.request("SetInputSettings", data: [
-                "inputName": video, "inputSettings": ["type": kickType, "application": bundle], "overlay": true,
-            ])
-            try? await Task.sleep(nanoseconds: 400_000_000)
             _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": final, "overlay": true])
 
-            // 오디오도 같은 방식으로 다시 잡는다
-            _ = try await client.request("SetInputSettings", data: ["inputName": audio, "inputSettings": ["type": 0], "overlay": true])
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            _ = try await client.request("SetInputSettings", data: ["inputName": audio, "inputSettings": ["type": 1, "application": bundle], "overlay": true])
+            // 오디오는 처음 한 번만 다시 잡는다 (매번 하면 소리가 끊긴다)
+            if appliedSignature == nil {
+                _ = try await client.request("SetInputSettings", data: ["inputName": audio, "inputSettings": ["type": 0], "overlay": true])
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                _ = try await client.request("SetInputSettings", data: ["inputName": audio, "inputSettings": ["type": 1, "application": bundle], "overlay": true])
+            }
 
             if let w = window {
-                let how = useDisplay ? (w.isFullscreenSized && opts.capture == .application ? "전체 화면 → 디스플레이 캡처" : "디스플레이 캡처") : "응용 프로그램 캡처 + 창 영역 크롭"
+                let how = (opts.capture == .display || w.isFullscreenSized) ? "디스플레이 캡처" : "디스플레이 캡처 + 창 영역 크롭"
                 log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · \(how)")
-                if useDisplay, w.isFullscreenSized, opts.capture == .application {
-                    onCaptureHint?("WoW 가 전체 화면 모드라 디스플레이를 캡처합니다. 게임이 앞에 있을 때만 게임 화면이 잡힙니다. 미리보기를 보며 확인하려면 WoW 를 '창 모드(전체 화면)' 로 두세요.")
-                } else {
-                    onCaptureHint?(nil)
-                }
+                onCaptureHint?(nil)
             } else {
                 log("캡처 설정 적용 (\(reason))")
             }
+            // 즉시 한 번 잘라내기 반영
+            await fitCanvasToSource()
         } catch {
             log("캡처 대상 갱신 실패: \(error.localizedDescription)")
         }
