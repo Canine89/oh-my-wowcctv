@@ -22,6 +22,8 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.cropTitleBar) private var cropTitleBar = true
     @AppStorage(Prefs.Key.previewFPS) private var previewFPS = 30
     @AppStorage(Prefs.Key.leaveGraceSeconds) private var leaveGraceSeconds = 30
+    @AppStorage(Prefs.Key.micDevice) private var micDevice = "default"
+    @State private var inputDevices: [AudioInputDevices.Device] = []
 
     @State private var addonMessage = ""
 
@@ -66,7 +68,20 @@ struct SettingsView: View {
                     Text("주 디스플레이 전체").tag("display")
                 }
                 Toggle("게임 소리 녹음", isOn: $gameAudio)
-                Toggle("마이크 녹음 (기본 입력 장치)", isOn: $micEnabled)
+                Toggle("마이크 녹음", isOn: $micEnabled)
+                if micEnabled {
+                    Picker("마이크 장치", selection: $micDevice) {
+                        Text(AudioInputDevices.displayName(for: "default")).tag("default")
+                        ForEach(inputDevices, id: \.uid) { d in Text(d.name).tag(d.uid) }
+                        if micDevice != "default", !inputDevices.contains(where: { $0.uid == micDevice }) {
+                            Text("(연결 안 됨) \(micDevice)").tag(micDevice)
+                        }
+                    }
+                    .onAppear { inputDevices = AudioInputDevices.list() }
+                    .onChange(of: micDevice) { _, _ in c.applyOBSSettings(); c.applyMicDevice() }
+                    Text("'시스템 기본' 은 macOS 사운드 설정의 입력 장치를 따라갑니다 (AirPods 를 끼면 AirPods, 빼면 다음 장치).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Toggle("마우스 커서 표시", isOn: $showCursor)
                 Toggle("녹화 해상도를 WoW 창 크기에 자동으로 맞춤 (검은 띠 없음)", isOn: $fitCanvasToWindow)
                 Toggle("창 모드일 때 macOS 제목 표시줄 잘라내기", isOn: $cropTitleBar)

@@ -181,6 +181,9 @@ struct MonitorView: View {
                 }
                 .labelsHidden().controlSize(.mini)
                 .onAppear { Task { await m.refreshMicDevices() } }
+                if let hint = m.micHint {
+                    Text(hint).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(8)

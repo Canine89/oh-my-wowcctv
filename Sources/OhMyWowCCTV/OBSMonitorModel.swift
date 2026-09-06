@@ -45,6 +45,9 @@ final class OBSMonitorModel: ObservableObject {
     @Published private(set) var canvasText: String?
     @Published private(set) var micDevices: [(id: String, name: String)] = []
     @Published private(set) var micDeviceID: String = "default"
+    /// 마이크에 신호가 거의 없을 때 보여 줄 경고
+    @Published private(set) var micHint: String?
+    private var micLoudAt = Date()
 
     let client: OBSClient
     var onLog: ((String) -> Void)?
@@ -132,6 +135,13 @@ final class OBSMonitorModel: ObservableObject {
                 lastMeterPublish = now
                 meters.peaks = newPeaks
                 pendingPeaks = [:]
+                // 마이크가 10초 넘게 -60 dB 아래면 장치가 잘못됐을 가능성이 크다
+                if let micPeak = newPeaks[OBSSceneWriter.micSourceName] {
+                    if micPeak > -60 { micLoudAt = now; if micHint != nil { micHint = nil } }
+                    else if now.timeIntervalSince(micLoudAt) > 10, micHint == nil {
+                        micHint = "마이크 신호가 거의 없습니다. 지금 장치: \(AudioInputDevices.displayName(for: micDeviceID)). 말하는 마이크가 다르면 위에서 바꾸세요."
+                    }
+                }
             } else {
                 pendingPeaks = newPeaks
             }
@@ -202,11 +212,14 @@ final class OBSMonitorModel: ObservableObject {
         let mic = OBSSceneWriter.micSourceName
         if let r = try? await client.request("GetInputPropertiesListPropertyItems", data: ["inputName": mic, "propertyName": "device_id"], timeout: 3),
            let items = r["propertyItems"] as? [[String: Any]] {
-            let list = items.compactMap { i -> (id: String, name: String)? in
+            var list = items.compactMap { i -> (id: String, name: String)? in
                 guard let id = i["itemValue"] as? String, let name = i["itemName"] as? String else { return nil }
                 return (id, name)
             }
-            if list.map(\.id) != micDevices.map(\.id) { micDevices = list }
+            // 맨 위에 "시스템 기본 (현재 장치)" 를 둔다
+            list.removeAll { $0.id == "default" }
+            list.insert(("default", AudioInputDevices.displayName(for: "default")), at: 0)
+            if list.map(\.id) != micDevices.map(\.id) || list.first?.name != micDevices.first?.name { micDevices = list }
         }
         if let r = try? await client.request("GetInputSettings", data: ["inputName": mic], timeout: 3),
            let st = r["inputSettings"] as? [String: Any] {
@@ -216,10 +229,11 @@ final class OBSMonitorModel: ObservableObject {
 
     func setMicDevice(_ id: String) {
         micDeviceID = id
+        UserDefaults.standard.set(id, forKey: Prefs.Key.micDevice)
+        micLoudAt = Date(); micHint = nil
         Task {
             _ = try? await client.request("SetInputSettings", data: ["inputName": OBSSceneWriter.micSourceName, "inputSettings": ["device_id": id], "overlay": true])
-            let name = micDevices.first { $0.id == id }?.name ?? id
-            onLog?("마이크 장치 변경: \(name)")
+            onLog?("마이크 장치 변경: \(AudioInputDevices.displayName(for: id))")
         }
     }
 

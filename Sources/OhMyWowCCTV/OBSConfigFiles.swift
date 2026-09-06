@@ -374,11 +374,10 @@ enum OBSSceneWriter {
         if options.mic {
             if json["AuxAudioDevice1"] == nil {
                 json["AuxAudioDevice1"] = micSource()
-            } else if var aux = json["AuxAudioDevice1"] as? [String: Any],
-                      var st = aux["settings"] as? [String: Any],
-                      (st["device_id"] as? String ?? "default") == "default",
-                      let user = userMicDeviceID() {
-                st["device_id"] = user
+            } else if var aux = json["AuxAudioDevice1"] as? [String: Any] {
+                // 마이크 장치는 앱 설정을 따른다 (기본: macOS 시스템 기본 입력 → AirPods 등으로 바꿔도 자동 추종)
+                var st = aux["settings"] as? [String: Any] ?? [:]
+                st["device_id"] = Prefs.micDevice
                 aux["settings"] = st
                 json["AuxAudioDevice1"] = aux
             }
@@ -396,16 +395,6 @@ enum OBSSceneWriter {
     }
 
     /// 사용자가 원래 OBS 에서 쓰던 마이크 장치 (기본 장면 모음의 마이크/Aux). 없으면 nil.
-    static func userMicDeviceID() -> String? {
-        guard let basic = OBSUserBasic.read(), let file = basic.sceneCollectionFile, file != "\(OBSPaths.cctvName).json",
-              let data = try? Data(contentsOf: OBSPaths.scenes.appendingPathComponent(file)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let aux = json["AuxAudioDevice1"] as? [String: Any],
-              let settings = aux["settings"] as? [String: Any],
-              let id = settings["device_id"] as? String, !id.isEmpty, id != "default" else { return nil }
-        return id
-    }
-
     static func audioSceneItem(uuid: String, id: Int) -> [String: Any] {
         [
             "name": audioSourceName, "source_uuid": uuid, "id": id,
@@ -421,9 +410,8 @@ enum OBSSceneWriter {
     }
 
     static func micSource() -> [String: Any] {
-        // 사용자가 OBS 에서 쓰던 마이크가 있으면 그 장치를, 없으면 시스템 기본 입력을 쓴다
-        let device = userMicDeviceID() ?? "default"
-        var m = source(name: micSourceName, id: "coreaudio_input_capture", uuid: UUID().uuidString.lowercased(), settings: ["device_id": device])
+        // 기본은 macOS 시스템 기본 입력("default"). 사용자가 설정/모니터에서 특정 장치를 고르면 그 UID.
+        var m = source(name: micSourceName, id: "coreaudio_input_capture", uuid: UUID().uuidString.lowercased(), settings: ["device_id": Prefs.micDevice])
         m["filters"] = [[
             "name": "소음 억제", "id": "noise_suppress_filter_v2", "versioned_id": "noise_suppress_filter_v2",
             "enabled": true, "settings": ["method": "rnnoise"],

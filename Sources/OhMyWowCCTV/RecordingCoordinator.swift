@@ -435,6 +435,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func refreshCapture() { obsManager.refreshCaptureNow(wowBundleID: Self.wowBundleID) }
+    func applyMicDevice() { Task { await obsManager.ensureMicDevice() } }
     func showOBS() { obsManager.showWindow() }
     func hideOBS() { obsManager.hideWindow() }
 

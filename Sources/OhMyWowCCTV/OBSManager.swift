@@ -398,16 +398,22 @@ final class OBSManager {
 
     // MARK: 마이크
 
-    /// 마이크가 '기본 장치'로 잡혀 있고 사용자가 OBS 에서 쓰던 마이크가 따로 있으면 그 장치로 바꾼다
+    /// OBS 의 마이크 소스를 앱 설정(Prefs.micDevice)과 맞춘다. 기본은 macOS 시스템 기본 입력.
     func ensureMicDevice() async {
-        guard Prefs.sceneOptions.mic, let user = OBSSceneWriter.userMicDeviceID() else { return }
+        guard Prefs.sceneOptions.mic else { return }
         let mic = OBSSceneWriter.micSourceName
+        let want = Prefs.micDevice
         guard let r = try? await client.request("GetInputSettings", data: ["inputName": mic], timeout: 3),
-              let st = r["inputSettings"] as? [String: Any],
-              (st["device_id"] as? String ?? "default") == "default" else { return }
+              let st = r["inputSettings"] as? [String: Any] else { return }
+        let current = st["device_id"] as? String ?? "default"
+        let label = AudioInputDevices.displayName(for: want)
+        if current == want {
+            log("마이크: \(label)")
+            return
+        }
         do {
-            _ = try await client.request("SetInputSettings", data: ["inputName": mic, "inputSettings": ["device_id": user], "overlay": true])
-            log("마이크를 OBS 에서 쓰던 장치로 설정: \(user.split(separator: ":").dropFirst(2).first.map(String.init) ?? user)")
+            _ = try await client.request("SetInputSettings", data: ["inputName": mic, "inputSettings": ["device_id": want], "overlay": true])
+            log("마이크 장치 적용: \(label)")
         } catch {
             log("마이크 장치 설정 실패: \(error.localizedDescription)")
         }
