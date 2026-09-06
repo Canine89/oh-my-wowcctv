@@ -113,6 +113,8 @@ final class OBSMonitorModel: ObservableObject {
             var newInput = false
             for input in inputs {
                 guard let name = input["inputName"] as? String else { continue }
+                // "WoW 화면" 은 영상 소스라 믹서에 넣지 않는다 (소리는 게임 소리 + 마이크 둘뿐)
+                if name == OBSSceneWriter.videoSourceName { continue }
                 let levels = input["inputLevelsMul"] as? [[Double]] ?? []
                 let peak = levels.compactMap { $0.count > 1 ? $0[1] : $0.first }.max() ?? 0
                 let dbRaw = peak > 0 ? 20 * log10(peak) : -100
