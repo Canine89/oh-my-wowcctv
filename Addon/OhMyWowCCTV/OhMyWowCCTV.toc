@@ -1,0 +1,9 @@
+## Interface: 120100
+## Title: Oh My WoW CCTV
+## Notes: 쐐기 던전에 입장하면 전투 기록을 자동으로 켜서 macOS CCTV 앱이 OBS 녹화를 시작/종료할 수 있게 합니다.
+## Author: canine89
+## Version: 1.1.0
+## SavedVariables: OhMyWowCCTVDB
+## X-Website: https://github.com/canine89/oh-my-wowcctv
+
+OhMyWowCCTV.lua
