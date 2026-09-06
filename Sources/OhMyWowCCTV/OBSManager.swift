@@ -390,50 +390,63 @@ final class OBSManager {
                   let itemID = vid["sceneItemId"] as? Int else { return }
             let t = try await client.request("GetSceneItemTransform", data: ["sceneName": scene, "sceneItemId": itemID], timeout: 3)
             guard let tr = t["sceneItemTransform"] as? [String: Any],
-                  let sw = tr["sourceWidth"] as? Double, let sh = tr["sourceHeight"] as? Double,
-                  sw >= 320, sh >= 240 else { return }
-            // 창 캡처 모드: 소스가 아직 이전 크기(디스플레이 크기 등)를 보고하는 동안은 건너뛴다
-            var cropTop = 0
+                  let swD = tr["sourceWidth"] as? Double, let shD = tr["sourceHeight"] as? Double,
+                  swD >= 320, shD >= 240 else { return }
+            let sw = Int(swD), sh = Int(shD)
+
+            // 기본: 소스 전체 (디스플레이 캡처 / 전체 화면)
+            var cropL = 0, cropT = 0, cropR = 0, cropB = 0
+            var w = sw, h = sh
+
             if Prefs.sceneOptions.capture == .application {
                 guard let info = WoWWindowLocator.find(bundleID: OBSSceneWriter.wowBundleID) else { return }
                 if !info.isFullscreenSized {
-                    let scale = info.backingScale
-                    let expectedW = Double(info.bounds.width) * scale, expectedH = Double(info.bounds.height) * scale
-                    guard abs(sw - expectedW) <= 4, abs(sh - expectedH) <= 4 else { return }
-                    if Prefs.cropTitleBar { cropTop = min(info.titleBarPixels, Int(sh) / 4) }
+                    // 응용 프로그램 캡처 프레임은 디스플레이 크기. 아직 이전 크기를 보고 중이면 다음 틱에
+                    guard let r = info.pixelRectInDisplay, abs(sw - r.displayW) <= 2, abs(sh - r.displayH) <= 2 else { return }
+                    let titleBar = Prefs.cropTitleBar ? min(info.titleBarPixels, r.h / 4) : 0
+                    cropL = r.x
+                    cropT = r.y + titleBar
+                    w = r.w
+                    h = r.h - titleBar
                 }
             }
-            let w = Int(sw) & ~1, h = (Int(sh) - cropTop) & ~1
+            // 인코더용 짝수 크기로 내리고 남는 픽셀은 오른쪽/아래에서 잘라낸다
+            w &= ~1; h &= ~1
+            cropR = sw - cropL - w
+            cropB = sh - cropT - h
+            guard w >= 320, h >= 240, cropR >= 0, cropB >= 0 else { return }
 
             let vs = try await client.request("GetVideoSettings", timeout: 3)
             let cur = (vs["baseWidth"] as? Int ?? 0, vs["baseHeight"] as? Int ?? 0, vs["outputWidth"] as? Int ?? 0, vs["outputHeight"] as? Int ?? 0)
             var changedCanvas = false
             if cur != (w, h, w, h) {
                 let rs = try await client.request("GetRecordStatus", timeout: 3)
-                if rs["outputActive"] as? Bool == true { return } // 녹화 중엔 불가
+                if rs["outputActive"] as? Bool == true { return } // 녹화 중엔 해상도 변경 불가 → 다음에
                 _ = try await client.request("SetVideoSettings", data: ["baseWidth": w, "baseHeight": h, "outputWidth": w, "outputHeight": h])
                 changedCanvas = true
             }
 
-            // 홀수 픽셀은 인코더가 못 받으므로 캔버스는 짝수로 내리고, 남는 1px 은 잘라내 1:1 로 맞춘다
-            let cropR = Int(sw) - w, cropB = Int(sh) - cropTop - h
-            let bw = tr["boundsWidth"] as? Double ?? 0, bh = tr["boundsHeight"] as? Double ?? 0
+            let bw = Int(tr["boundsWidth"] as? Double ?? 0), bh = Int(tr["boundsHeight"] as? Double ?? 0)
             let px = tr["positionX"] as? Double ?? -1, py = tr["positionY"] as? Double ?? -1
-            let cr = tr["cropRight"] as? Int ?? -1, cb = tr["cropBottom"] as? Int ?? -1, ct = tr["cropTop"] as? Int ?? -1
-            if changedCanvas || Int(bw) != w || Int(bh) != h || px != 0 || py != 0 || cr != cropR || cb != cropB || ct != cropTop {
+            let cl = tr["cropLeft"] as? Int ?? -1, ct = tr["cropTop"] as? Int ?? -1
+            let cr = tr["cropRight"] as? Int ?? -1, cb = tr["cropBottom"] as? Int ?? -1
+            if changedCanvas || bw != w || bh != h || px != 0 || py != 0 || cl != cropL || ct != cropT || cr != cropR || cb != cropB {
                 _ = try await client.request("SetSceneItemTransform", data: [
                     "sceneName": scene, "sceneItemId": itemID,
                     "sceneItemTransform": [
                         "positionX": 0, "positionY": 0, "rotation": 0, "alignment": 5,
                         "boundsType": "OBS_BOUNDS_SCALE_INNER", "boundsAlignment": 0,
                         "boundsWidth": w, "boundsHeight": h,
-                        "cropLeft": 0, "cropTop": cropTop, "cropRight": cropR, "cropBottom": cropB,
+                        "cropLeft": cropL, "cropTop": cropT, "cropRight": cropR, "cropBottom": cropB,
                     ],
                 ])
+                if !changedCanvas, lastCanvas.map({ $0 == (w, h) }) ?? false {
+                    log("캡처 영역 갱신: \(w)x\(h) (좌 \(cropL), 상 \(cropT))")
+                }
             }
             if changedCanvas, lastCanvas.map({ $0 != (w, h) }) ?? true {
                 lastCanvas = (w, h)
-                log("녹화 해상도를 창 크기에 맞춤: \(w)x\(h)" + (cropTop > 0 ? " (제목 표시줄 \(cropTop)px 제외)" : ""))
+                log("녹화 해상도를 창 크기에 맞춤: \(w)x\(h)" + (cropT > 0 || cropL > 0 ? " (창 영역만, 제목 표시줄 제외)" : ""))
             }
         } catch {
             log("해상도 맞춤 실패: \(error.localizedDescription)")
@@ -477,7 +490,7 @@ final class OBSManager {
             _ = try await client.request("SetInputSettings", data: ["inputName": audio, "inputSettings": ["type": 1, "application": bundle], "overlay": true])
 
             if let w = window {
-                let how = useDisplay ? (w.isFullscreenSized && opts.capture == .application ? "전체 화면 → 디스플레이 캡처" : "디스플레이 캡처") : "창 캡처 (id \(w.windowID))"
+                let how = useDisplay ? (w.isFullscreenSized && opts.capture == .application ? "전체 화면 → 디스플레이 캡처" : "디스플레이 캡처") : "응용 프로그램 캡처 + 창 영역 크롭"
                 log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · \(how)")
                 if useDisplay, w.isFullscreenSized, opts.capture == .application {
                     onCaptureHint?("WoW 가 전체 화면 모드라 디스플레이를 캡처합니다. 게임이 앞에 있을 때만 게임 화면이 잡힙니다. 미리보기를 보며 확인하려면 WoW 를 '창 모드(전체 화면)' 로 두세요.")

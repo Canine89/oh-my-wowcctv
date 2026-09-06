@@ -9,9 +9,29 @@ struct WoWWindowInfo: Equatable {
     let isOnScreen: Bool
 
     var signature: String { "\(windowID)|\(Int(bounds.width))x\(Int(bounds.height))|\(displayUUID ?? "-")|\(isFullscreenSized)" }
+    /// 위치까지 포함한 서명 (창을 옮기면 크롭을 다시 계산해야 한다)
+    var placement: String { "\(signature)|\(Int(bounds.minX)),\(Int(bounds.minY))" }
 
     /// 창이 디스플레이를 통째로 덮는 크기인지 (독점 전체 화면 또는 창 모드 전체 화면)
     var isFullscreenSized: Bool { !isWindowed }
+
+    /// 창이 속한 디스플레이 안에서의 위치/크기 (픽셀 단위). 캡처 프레임을 잘라낼 때 쓴다.
+    var pixelRectInDisplay: (x: Int, y: Int, w: Int, h: Int, displayW: Int, displayH: Int)? {
+        guard let display = WoWWindowLocator.display(containing: bounds) else { return nil }
+        let db = CGDisplayBounds(display)
+        let scale = backingScale
+        let dw = Int(CGDisplayPixelsWide(display)), dh = Int(CGDisplayPixelsHigh(display))
+        var x = Int(((bounds.minX - db.minX) * scale).rounded())
+        var y = Int(((bounds.minY - db.minY) * scale).rounded())
+        var w = Int((bounds.width * scale).rounded())
+        var h = Int((bounds.height * scale).rounded())
+        // 디스플레이 밖으로 나간 부분은 잘라낸다
+        if x < 0 { w += x; x = 0 }
+        if y < 0 { h += y; y = 0 }
+        w = min(w, dw - x); h = min(h, dh - y)
+        guard w > 0, h > 0 else { return nil }
+        return (x, y, w, h, dw, dh)
+    }
 
     /// 디스플레이 배율 (픽셀/포인트)
     var backingScale: Double {

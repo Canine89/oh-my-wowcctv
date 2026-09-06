@@ -388,20 +388,15 @@ enum OBSSceneWriter {
         return json
     }
 
-    /// - windowID: WoW 게임 창 ID. 알고 있으면 윈도우 캡처(창 픽셀 크기 그대로, 여백 없음)를 쓰고,
-    ///   모르면 응용 프로그램 캡처로 시작한다 (앱이 창을 찾는 즉시 윈도우 캡처로 바꾼다).
+    /// WoW 창 모드는 응용 프로그램 캡처(번들 ID 기반, 창 ID 불필요)를 쓴다.
+    /// 프레임은 디스플레이 크기로 나오고 그 안에 WoW 창만 그려지므로, 앱이 창 영역만큼 잘라내 1:1 로 맞춘다.
+    /// (SCK 창 캡처는 창 ID 를 못 찾는 경우가 잦아 쓰지 않는다: "Invalid target window ID")
     static func videoSettings(_ o: OBSSceneOptions, windowID: Int? = nil) -> [String: Any] {
-        var s: [String: Any] = ["show_cursor": o.showCursor, "hide_obs": true, "show_empty_names": false, "show_hidden_windows": false]
+        var s: [String: Any] = ["show_cursor": o.showCursor, "hide_obs": true, "show_empty_names": false, "show_hidden_windows": true]
         switch o.capture {
         case .application:
-            if let windowID {
-                s["type"] = 1
-                s["window"] = windowID
-                s["application"] = wowBundleID
-            } else {
-                s["type"] = 2
-                s["application"] = wowBundleID
-            }
+            s["type"] = 2
+            s["application"] = wowBundleID
         case .display:
             s["type"] = 0
             // display_uuid 를 비워 두면 OBS 가 주 디스플레이를 고른다
