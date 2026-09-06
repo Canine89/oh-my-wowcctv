@@ -23,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.previewFPS) private var previewFPS = 30
     @AppStorage(Prefs.Key.leaveGraceSeconds) private var leaveGraceSeconds = 30
     @AppStorage(Prefs.Key.micDevice) private var micDevice = "default"
+    @AppStorage(Prefs.Key.micGainDb) private var micGainDb = 0
     @State private var inputDevices: [AudioInputDevices.Device] = []
 
     @State private var addonMessage = ""
@@ -80,6 +81,13 @@ struct SettingsView: View {
                     .onAppear { inputDevices = AudioInputDevices.list() }
                     .onChange(of: micDevice) { _, _ in c.applyOBSSettings(); c.applyMicDevice() }
                     Text("'시스템 기본' 은 macOS 사운드 설정의 입력 장치를 따라갑니다 (AirPods 를 끼면 AirPods, 빼면 다음 장치).")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Text("마이크 증폭 +\(micGainDb) dB")
+                        Slider(value: Binding(get: { Double(micGainDb) }, set: { micGainDb = Int($0.rounded()) }), in: 0...30, step: 1)
+                            .onChange(of: micGainDb) { _, _ in c.applyOBSSettings(); c.applyMicGain() }
+                    }
+                    Text("원래 OBS 에서 마이크에 걸어 둔 필터(게이트·억제·컴프레서·리미터)를 그대로 가져오고, 이 앱은 그 앞에 증폭만 더합니다. 증폭이 앞에 있어야 게이트가 열립니다. CCTV 모니터의 '자동 맞춤'으로 말하면서 값을 정할 수 있습니다.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("마우스 커서 표시", isOn: $showCursor)

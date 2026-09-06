@@ -36,6 +36,47 @@ enum AudioInputDevices {
         return list().first { $0.uid == deviceID }?.name ?? deviceID
     }
 
+    /// 시스템 입력 음량(0~1). 장치가 지원하지 않으면 nil. deviceID 가 "default" 면 기본 입력 장치.
+    static func inputVolume(for deviceID: String) -> Float? {
+        guard let id = audioDeviceID(for: deviceID) else { return nil }
+        for element in [UInt32(kAudioObjectPropertyElementMain), 1, 2] {
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeInput, mElement: element)
+            guard AudioObjectHasProperty(id, &addr) else { continue }
+            var v: Float32 = 0; var size = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &v) == noErr { return v }
+        }
+        return nil
+    }
+
+    /// 시스템 입력 음량 설정. 성공하면 true.
+    @discardableResult
+    static func setInputVolume(_ volume: Float, for deviceID: String) -> Bool {
+        guard let id = audioDeviceID(for: deviceID) else { return false }
+        var ok = false
+        for element in [UInt32(kAudioObjectPropertyElementMain), 1, 2] {
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: kAudioDevicePropertyScopeInput, mElement: element)
+            var settable: DarwinBoolean = false
+            guard AudioObjectHasProperty(id, &addr), AudioObjectIsPropertySettable(id, &addr, &settable) == noErr, settable.boolValue else { continue }
+            var v = Float32(max(0, min(1, volume)))
+            if AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<Float32>.size), &v) == noErr { ok = true }
+        }
+        return ok
+    }
+
+    private static func audioDeviceID(for deviceID: String) -> AudioDeviceID? {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        if deviceID == "default" {
+            var a = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var id: AudioDeviceID = 0; var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            return AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &size, &id) == noErr && id != 0 ? id : nil
+        }
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return nil }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return nil }
+        return ids.first { string($0, kAudioDevicePropertyDeviceUID) == deviceID }
+    }
+
     private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
         var addr = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var value: CFString = "" as CFString

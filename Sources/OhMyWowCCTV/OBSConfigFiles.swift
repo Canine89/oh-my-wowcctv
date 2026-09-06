@@ -379,6 +379,8 @@ enum OBSSceneWriter {
                 var st = aux["settings"] as? [String: Any] ?? [:]
                 st["device_id"] = Prefs.micDevice
                 aux["settings"] = st
+                // 필터 체인은 사용자 OBS 의 마이크 필터 + CCTV 게인(맨 앞) 으로 매번 다시 맞춘다
+                aux["filters"] = micFilters(gainDb: Prefs.micGainDb)
                 json["AuxAudioDevice1"] = aux
             }
         } else {
@@ -409,13 +411,58 @@ enum OBSSceneWriter {
         ]
     }
 
+    static let gainFilterName = "CCTV 게인"
+    static let limiterFilterName = "CCTV 리미터"
+
+    /// 사용자가 원래 OBS 장면 모음의 마이크(AuxAudioDevice1)에 걸어 둔 필터 체인을 그대로 복사한다.
+    static func userMicFilters() -> [[String: Any]] {
+        let fm = FileManager.default
+        var candidates: [URL] = []
+        if let basic = OBSUserBasic.read(), let file = basic.sceneCollectionFile, file != "\(OBSPaths.cctvName).json" {
+            candidates.append(OBSPaths.scenes.appendingPathComponent(file))
+        }
+        if let files = try? fm.contentsOfDirectory(atPath: OBSPaths.scenes.path) {
+            for f in files.sorted() where f.hasSuffix(".json") && f != "\(OBSPaths.cctvName).json" {
+                candidates.append(OBSPaths.scenes.appendingPathComponent(f))
+            }
+        }
+        for url in candidates {
+            guard let data = try? Data(contentsOf: url),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let aux = json["AuxAudioDevice1"] as? [String: Any],
+                  let filters = aux["filters"] as? [[String: Any]], !filters.isEmpty else { continue }
+            // 이름/종류/설정/활성만 가져온다 (uuid 등은 새로 만들어지게)
+            return filters.compactMap { f in
+                guard let name = f["name"] as? String, let id = f["id"] as? String else { return nil }
+                return ["name": name, "id": id, "versioned_id": f["versioned_id"] as? String ?? id,
+                        "enabled": f["enabled"] as? Bool ?? true, "settings": f["settings"] as? [String: Any] ?? [:]]
+            }
+        }
+        return []
+    }
+
+    /// 마이크 필터 체인.
+    /// 증폭(CCTV 게인)은 **맨 앞**에 둔다: 사용자의 노이즈 게이트가 -35 dB 에서 열리는데 USB 마이크 원음이 -42 dB 면
+    /// 게이트가 아예 안 열려 뒤에서 아무리 증폭해도 무음이 된다. 앞에서 올려 주면 그 뒤 체인(게이트→억제→컴프→리미터)이
+    /// 사용자가 OBS 에서 맞춰 둔 그대로 동작한다. 사용자 체인이 없으면 기본 체인(소음 억제 + 리미터)을 쓴다.
+    static func micFilters(gainDb: Int) -> [[String: Any]] {
+        let gain: [String: Any] = ["name": gainFilterName, "id": "gain_filter", "versioned_id": "gain_filter",
+                                   "enabled": true, "settings": ["db": Double(gainDb)]]
+        let user = userMicFilters()
+        if !user.isEmpty { return [gain] + user }
+        return [
+            gain,
+            ["name": "소음 억제", "id": "noise_suppress_filter_v2", "versioned_id": "noise_suppress_filter_v2",
+             "enabled": true, "settings": ["method": "rnnoise"]],
+            ["name": limiterFilterName, "id": "limiter_filter", "versioned_id": "limiter_filter",
+             "enabled": true, "settings": ["threshold": -3.0, "release_time": 60]],
+        ]
+    }
+
     static func micSource() -> [String: Any] {
         // 기본은 macOS 시스템 기본 입력("default"). 사용자가 설정/모니터에서 특정 장치를 고르면 그 UID.
         var m = source(name: micSourceName, id: "coreaudio_input_capture", uuid: UUID().uuidString.lowercased(), settings: ["device_id": Prefs.micDevice])
-        m["filters"] = [[
-            "name": "소음 억제", "id": "noise_suppress_filter_v2", "versioned_id": "noise_suppress_filter_v2",
-            "enabled": true, "settings": ["method": "rnnoise"],
-        ]]
+        m["filters"] = micFilters(gainDb: Prefs.micGainDb)
         return m
     }
 

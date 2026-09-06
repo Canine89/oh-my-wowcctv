@@ -5,6 +5,7 @@ struct MonitorView: View {
     @EnvironmentObject private var c: RecordingCoordinator
     @ObservedObject private var m: OBSMonitorModel
     @AppStorage(Prefs.Key.captureMode) private var captureMode = "application"
+    @AppStorage(Prefs.Key.micGainDb) private var micGainDb = 0
 
     init(model: OBSMonitorModel) { m = model }
 
@@ -181,6 +182,20 @@ struct MonitorView: View {
                 }
                 .labelsHidden().controlSize(.mini)
                 .onAppear { Task { await m.refreshMicDevices() } }
+                HStack(spacing: 6) {
+                    Text("증폭").font(.caption2)
+                    Slider(value: Binding(get: { Double(micGainDb) }, set: { micGainDb = Int($0.rounded()) }), in: 0...30, step: 1)
+                        .controlSize(.mini)
+                        .onChange(of: micGainDb) { _, _ in c.applyMicGain() }
+                    Text("+\(micGainDb) dB").font(.caption2.monospacedDigit()).frame(width: 44, alignment: .trailing)
+                }
+                HStack(spacing: 6) {
+                    Button(c.micAutoFitting ? "측정 중… 말하세요" : "자동 맞춤 (5초간 말하기)") { c.autoFitMicGain() }
+                        .controlSize(.mini).disabled(c.micAutoFitting)
+                    if let vol = AudioInputDevices.inputVolume(for: m.micDeviceID) {
+                        Text("macOS 입력 \(Int(vol * 100))%").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 if let hint = m.micHint {
                     Text(hint).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }

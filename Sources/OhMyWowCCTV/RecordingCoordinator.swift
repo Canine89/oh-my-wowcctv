@@ -435,7 +435,17 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func refreshCapture() { obsManager.refreshCaptureNow(wowBundleID: Self.wowBundleID) }
-    func applyMicDevice() { Task { await obsManager.ensureMicDevice() } }
+    func applyMicDevice() { Task { await obsManager.ensureMicDevice(); await obsManager.applyMicGain() } }
+    func applyMicGain() { Task { await obsManager.applyMicGain() } }
+    @Published private(set) var micAutoFitting = false
+    func autoFitMicGain() {
+        guard !micAutoFitting else { return }
+        micAutoFitting = true
+        Task {
+            _ = await obsManager.autoFitMicGain { [weak self] in self?.monitor.meters.peaks[OBSSceneWriter.micSourceName] }
+            micAutoFitting = false
+        }
+    }
     func showOBS() { obsManager.showWindow() }
     func hideOBS() { obsManager.hideWindow() }
 

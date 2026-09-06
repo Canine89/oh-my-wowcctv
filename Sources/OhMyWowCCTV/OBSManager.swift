@@ -330,7 +330,7 @@ final class OBSManager {
             while !Task.isCancelled {
                 guard let self else { return }
                 if self.client.state == .connected {
-                    if !micChecked { micChecked = true; await self.ensureMicDevice() }
+                    if !micChecked { micChecked = true; await self.ensureMicDevice(); await self.applyMicGain() }
                     if let info = WoWWindowLocator.find(bundleID: wowBundleID) {
                         waitedForWindow = false
                         if info.signature != self.appliedSignature {
@@ -417,6 +417,81 @@ final class OBSManager {
         } catch {
             log("마이크 장치 설정 실패: \(error.localizedDescription)")
         }
+    }
+
+    private var inputVolumeRaised = false
+
+    /// 실행 중인 OBS 의 마이크 필터 체인을 [CCTV 게인] + 사용자 OBS 필터 로 맞추고 게인 값을 설정대로 둔다.
+    /// 시스템 입력 음량이 조절 가능하고 최대가 아니면 최대로 올린다 (가장 깨끗한 증폭).
+    func applyMicGain() async {
+        guard client.state == .connected, Prefs.sceneOptions.mic else { return }
+        let mic = OBSSceneWriter.micSourceName
+        let device = Prefs.micDevice
+        if !inputVolumeRaised, let vol = AudioInputDevices.inputVolume(for: device), vol < 0.99 {
+            inputVolumeRaised = true
+            if AudioInputDevices.setInputVolume(1.0, for: device) { log("macOS 마이크 입력 음량 \(Int(vol * 100))% → 100%") }
+        }
+        let desired = OBSSceneWriter.micFilters(gainDb: Prefs.micGainDb)
+        do {
+            let list = try await client.request("GetSourceFilterList", data: ["sourceName": mic], timeout: 3)
+            let existing = (list["filters"] as? [[String: Any]] ?? [])
+            let existingNames = existing.compactMap { $0["filterName"] as? String }
+            let desiredNames = desired.compactMap { $0["name"] as? String }
+            // 원하는 체인에 없는 필터(이전 버전이 만든 것 등)는 제거
+            for name in existingNames where !desiredNames.contains(name) {
+                _ = try? await client.request("RemoveSourceFilter", data: ["sourceName": mic, "filterName": name])
+            }
+            for (index, f) in desired.enumerated() {
+                guard let name = f["name"] as? String, let kind = f["id"] as? String else { continue }
+                let settings = f["settings"] as? [String: Any] ?? [:]
+                if existingNames.contains(name) {
+                    if name == OBSSceneWriter.gainFilterName {
+                        _ = try await client.request("SetSourceFilterSettings", data: ["sourceName": mic, "filterName": name, "filterSettings": settings, "overlay": true])
+                    }
+                } else {
+                    _ = try await client.request("CreateSourceFilter", data: ["sourceName": mic, "filterName": name, "filterKind": kind, "filterSettings": settings])
+                }
+                _ = try? await client.request("SetSourceFilterIndex", data: ["sourceName": mic, "filterName": name, "filterIndex": index])
+                if let enabled = f["enabled"] as? Bool {
+                    _ = try? await client.request("SetSourceFilterEnabled", data: ["sourceName": mic, "filterName": name, "filterEnabled": enabled])
+                }
+            }
+            let chain = desiredNames.joined(separator: " → ")
+            log("마이크 증폭 +\(Prefs.micGainDb) dB · 필터 체인: \(chain)")
+        } catch {
+            log("마이크 필터 적용 실패: \(error.localizedDescription)")
+        }
+    }
+
+    /// 몇 초간 마이크 피크를 재서 게인을 자동으로 정한다 (목표 피크 -12 dB). 말하는 동안 눌러야 한다.
+    /// 시스템 입력 음량이 조절 가능하면 먼저 최대로 올린다.
+    func autoFitMicGain(seconds: Double = 5, peakProvider: @escaping () -> Double?) async -> Int? {
+        let device = Prefs.micDevice
+        if let vol = AudioInputDevices.inputVolume(for: device), vol < 0.99 {
+            if AudioInputDevices.setInputVolume(1.0, for: device) { log("macOS 입력 음량을 최대로 올림 (이전 \(Int(vol * 100))%)") }
+        }
+        // 사용자 체인의 노이즈 게이트가 열리도록 프로브 게인 +20 dB 로 재고, 결과에서 상대 보정한다
+        let saved = Prefs.micGainDb
+        let probe = 20
+        UserDefaults.standard.set(probe, forKey: Prefs.Key.micGainDb)
+        await applyMicGain()
+        var peak = -100.0
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if let p = peakProvider() { peak = max(peak, p) }
+        }
+        guard peak > -70 else {
+            UserDefaults.standard.set(saved, forKey: Prefs.Key.micGainDb)
+            await applyMicGain()
+            log("자동 맞춤 실패: 마이크 신호가 없습니다 (측정 중 말을 하세요)")
+            return nil
+        }
+        let gain = min(30, max(0, Int((Double(probe) + (-12 - peak)).rounded())))
+        UserDefaults.standard.set(gain, forKey: Prefs.Key.micGainDb)
+        await applyMicGain()
+        log(String(format: "자동 맞춤: 측정 피크 %.0f dB → 증폭 +%d dB", peak, gain))
+        return gain
     }
 
     // MARK: 캔버스 맞춤

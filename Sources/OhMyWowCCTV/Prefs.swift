@@ -23,6 +23,7 @@ enum Prefs {
         static let previewFPS = "previewFPS"
         static let leaveGraceSeconds = "leaveGraceSeconds"
         static let micDevice = "micDevice"          // "default" = macOS 시스템 기본 입력, 아니면 CoreAudio UID
+        static let micGainDb = "micGainDb"          // OBS 게인 필터 (0~30 dB)
     }
 
     static let defaults: [String: Any] = [
@@ -46,6 +47,7 @@ enum Prefs {
         Key.previewFPS: 30,
         Key.leaveGraceSeconds: 30,
         Key.micDevice: "default",
+        Key.micGainDb: 0,
     ]
 
     static func register() {
@@ -71,6 +73,7 @@ enum Prefs {
     static var cropTitleBar: Bool { ud.bool(forKey: Key.cropTitleBar) }
     static var previewFPS: Int { min(60, max(5, ud.integer(forKey: Key.previewFPS))) }
     static var leaveGraceSeconds: Int { max(5, ud.integer(forKey: Key.leaveGraceSeconds)) }
+    static var micGainDb: Int { min(30, max(0, ud.integer(forKey: Key.micGainDb))) }
     static var micDevice: String { let v = ud.string(forKey: Key.micDevice) ?? "default"; return v.isEmpty ? "default" : v }
 
     static var sceneOptions: OBSSceneOptions {
