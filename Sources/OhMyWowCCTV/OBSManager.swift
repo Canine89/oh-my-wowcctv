@@ -311,12 +311,17 @@ final class OBSManager {
 
     // MARK: - 캡처 대상 갱신
 
+    private enum CaptureKind { case window, display }
     private var captureWatchTask: Task<Void, Never>?
     private var appliedSignature: String?
+    private var appliedKind: CaptureKind = .display
+    /// 창 캡처가 프레임을 못 주는(독점 전체 화면 등) 창 서명은 디스플레이 캡처로 대체한다
+    private var fallbackSignatures = Set<String>()
+    private var zeroFrameTicks = 0
+    private var lastCanvas: (Int, Int)?
 
-    /// OBS 가 WoW 보다 먼저(또는 거의 동시에) 뜨면 캡처 스트림이 빈 대상으로 만들어져 검은 화면이 된다.
-    /// WoW 창이 실제로 뜬 것을 확인한 뒤 캡처 종류를 한 번 바꿨다 되돌려 OBS 가 대상을 다시 잡게 한다.
-    /// 창이 바뀌거나(전체화면 전환 등) 다른 디스플레이로 옮겨가도 다시 적용한다.
+    /// WoW 창을 찾아 캡처를 맞추고, 창이 바뀌거나 다른 디스플레이로 옮겨가면 다시 적용한다.
+    /// 창 캡처가 프레임을 못 받으면(로그인 화면 잠깐, 독점 전체 화면) 디스플레이 캡처로 자동 대체한다.
     func startCaptureWatch(wowBundleID: String) {
         stopCaptureWatch()
         captureWatchTask = Task { [weak self] in
@@ -327,11 +332,13 @@ final class OBSManager {
                 if self.client.state == .connected {
                     if !micChecked { micChecked = true; await self.ensureMicDevice() }
                     if let info = WoWWindowLocator.find(bundleID: wowBundleID) {
+                        waitedForWindow = false
                         if info.signature != self.appliedSignature {
                             await self.refreshCapture(info, reason: self.appliedSignature == nil ? "WoW 창 확인" : "WoW 창 변경")
-                            try? await Task.sleep(nanoseconds: 1_000_000_000) // 소스가 크기를 보고할 시간
+                            try? await Task.sleep(nanoseconds: 1_200_000_000) // 소스가 프레임/크기를 보고할 시간
                         }
-                        if Prefs.fitCanvasToWindow { await self.fitCanvasToSource() }
+                        if Prefs.fitCanvasToWindow { await self.fitCanvasToSource(window: info) }
+                        await self.selfHealIfNoFrames(info)
                     } else if !waitedForWindow {
                         waitedForWindow = true
                         self.log("WoW 창이 뜨기를 기다리는 중…")
@@ -347,13 +354,16 @@ final class OBSManager {
         captureWatchTask?.cancel()
         captureWatchTask = nil
         appliedSignature = nil
+        fallbackSignatures.removeAll()
+        zeroFrameTicks = 0
     }
 
-    /// 지금 당장 캡처 대상을 다시 잡는다 (모니터 창의 캡처 전환 등)
+    /// 지금 당장 캡처 대상을 다시 잡는다 (모니터 창의 캡처 전환/다시 잡기 버튼)
     func refreshCaptureNow(wowBundleID: String) {
         Task { [weak self] in
             guard let self else { return }
             if let info = WoWWindowLocator.find(bundleID: wowBundleID) {
+                self.fallbackSignatures.remove(info.signature) // 수동 요청은 창 캡처부터 다시 시도
                 await self.refreshCapture(info, reason: "수동 갱신")
             } else {
                 await self.applyCaptureSettings(window: nil, reason: "수동 갱신 (WoW 창 없음)")
@@ -361,9 +371,34 @@ final class OBSManager {
         }
     }
 
-    private var lastCanvas: (Int, Int)?
+    private func sourceSize() async -> (Int, Int)? {
+        guard let items = try? await client.request("GetSceneItemList", data: ["sceneName": OBSSceneWriter.sceneName], timeout: 3),
+              let list = items["sceneItems"] as? [[String: Any]],
+              let vid = list.first(where: { $0["sourceName"] as? String == OBSSceneWriter.videoSourceName }),
+              let itemID = vid["sceneItemId"] as? Int,
+              let t = try? await client.request("GetSceneItemTransform", data: ["sceneName": OBSSceneWriter.sceneName, "sceneItemId": itemID], timeout: 3),
+              let tr = t["sceneItemTransform"] as? [String: Any],
+              let sw = tr["sourceWidth"] as? Double, let sh = tr["sourceHeight"] as? Double else { return nil }
+        return (Int(sw), Int(sh))
+    }
 
-    /// 마이크가 '기본 장치'로 잡혀 있고 사용자가 OBS 에서 쓰던 마이크가 따로 있으면 그 장치로 바꾼다 (실행 중인 OBS 에 즉시 적용)
+    /// 창 캡처인데 소스가 프레임을 안 주면(0 크기) 디스플레이 캡처로 대체한다
+    private func selfHealIfNoFrames(_ info: WoWWindowInfo) async {
+        guard appliedKind == .window else { zeroFrameTicks = 0; return }
+        let sz = await sourceSize()
+        if let sz, sz.0 >= 100, sz.1 >= 100 { zeroFrameTicks = 0; return }
+        zeroFrameTicks += 1
+        if zeroFrameTicks >= 2 {
+            zeroFrameTicks = 0
+            fallbackSignatures.insert(info.signature)
+            log("창 캡처가 프레임을 못 받아 디스플레이 캡처로 대체합니다 (전체 화면 모드일 수 있음)")
+            await refreshCapture(info, reason: "대체")
+        }
+    }
+
+    // MARK: 마이크
+
+    /// 마이크가 '기본 장치'로 잡혀 있고 사용자가 OBS 에서 쓰던 마이크가 따로 있으면 그 장치로 바꾼다
     func ensureMicDevice() async {
         guard Prefs.sceneOptions.mic, let user = OBSSceneWriter.userMicDeviceID() else { return }
         let mic = OBSSceneWriter.micSourceName
@@ -378,9 +413,13 @@ final class OBSManager {
         }
     }
 
-    /// 캔버스와 출력 해상도를 캡처 소스의 실제 픽셀 크기에 맞춘다 → 검은 띠 없이 창이 꽉 차게 녹화된다.
-    /// 녹화 중에는 해상도를 바꿀 수 없으므로 건너뛰고, 다음 틱에 다시 시도한다.
-    func fitCanvasToSource() async {
+    // MARK: 캔버스 맞춤
+
+    /// 캔버스/출력 해상도와 크롭을 캡처 소스에 맞춘다.
+    /// - 창 캡처: 소스 = 창(제목 표시줄 포함) → 제목 표시줄만 잘라낸다.
+    /// - 디스플레이 캡처(창 모드): 디스플레이에서 WoW 창 영역만 잘라낸다.
+    /// - 디스플레이 캡처(전체 화면/디스플레이 고정): 소스 전체.
+    func fitCanvasToSource(window info: WoWWindowInfo?) async {
         guard client.state == .connected else { return }
         let scene = OBSSceneWriter.sceneName
         do {
@@ -394,23 +433,25 @@ final class OBSManager {
                   swD >= 320, shD >= 240 else { return }
             let sw = Int(swD), sh = Int(shD)
 
-            // 기본: 소스 전체 (디스플레이 캡처 / 전체 화면)
             var cropL = 0, cropT = 0, cropR = 0, cropB = 0
             var w = sw, h = sh
 
-            if Prefs.sceneOptions.capture == .application {
-                guard let info = WoWWindowLocator.find(bundleID: OBSSceneWriter.wowBundleID) else { return }
-                if !info.isFullscreenSized {
-                    // 응용 프로그램 캡처 프레임은 디스플레이 크기. 아직 이전 크기를 보고 중이면 다음 틱에
-                    guard let r = info.pixelRectInDisplay, abs(sw - r.displayW) <= 2, abs(sh - r.displayH) <= 2 else { return }
-                    let titleBar = Prefs.cropTitleBar ? min(info.titleBarPixels, r.h / 4) : 0
-                    cropL = r.x
-                    cropT = r.y + titleBar
-                    w = r.w
-                    h = r.h - titleBar
-                }
+            if appliedKind == .window {
+                // 소스가 창 전체(제목 표시줄 포함). 제목 표시줄만 위에서 잘라낸다.
+                let titleBar = Prefs.cropTitleBar ? min(info?.titleBarPixels ?? 0, sh / 4) : 0
+                cropT = titleBar
+                h = sh - titleBar
+            } else if Prefs.sceneOptions.capture == .application, let info, !info.isFullscreenSized,
+                      let r = info.pixelRectInDisplay, abs(sw - r.displayW) <= 2, abs(sh - r.displayH) <= 2 {
+                // 디스플레이 캡처를 WoW 창 영역만큼 잘라낸다
+                let titleBar = Prefs.cropTitleBar ? min(info.titleBarPixels, r.h / 4) : 0
+                cropL = r.x; cropT = r.y + titleBar
+                w = r.w; h = r.h - titleBar
+            } else if Prefs.sceneOptions.capture == .application {
+                // 디스플레이 캡처인데 아직 창 크기 정보가 안 맞으면 다음 틱에
+                if info != nil, !(info!.isFullscreenSized) { return }
             }
-            // 인코더용 짝수 크기로 내리고 남는 픽셀은 오른쪽/아래에서 잘라낸다
+
             w &= ~1; h &= ~1
             cropR = sw - cropL - w
             cropB = sh - cropT - h
@@ -421,7 +462,7 @@ final class OBSManager {
             var changedCanvas = false
             if cur != (w, h, w, h) {
                 let rs = try await client.request("GetRecordStatus", timeout: 3)
-                if rs["outputActive"] as? Bool == true { return } // 녹화 중엔 해상도 변경 불가 → 다음에
+                if rs["outputActive"] as? Bool == true { return } // 녹화 중엔 해상도 변경 불가
                 _ = try await client.request("SetVideoSettings", data: ["baseWidth": w, "baseHeight": h, "outputWidth": w, "outputHeight": h])
                 changedCanvas = true
             }
@@ -440,13 +481,10 @@ final class OBSManager {
                         "cropLeft": cropL, "cropTop": cropT, "cropRight": cropR, "cropBottom": cropB,
                     ],
                 ])
-                if !changedCanvas, lastCanvas.map({ $0 == (w, h) }) ?? false {
-                    log("캡처 영역 갱신: \(w)x\(h) (좌 \(cropL), 상 \(cropT))")
-                }
             }
             if changedCanvas, lastCanvas.map({ $0 != (w, h) }) ?? true {
                 lastCanvas = (w, h)
-                log("녹화 해상도를 창 크기에 맞춤: \(w)x\(h)" + (cropT > 0 || cropL > 0 ? " (창 영역만, 제목 표시줄 제외)" : ""))
+                log("녹화 해상도를 창 크기에 맞춤: \(w)x\(h)")
             }
         } catch {
             log("해상도 맞춤 실패: \(error.localizedDescription)")
@@ -466,11 +504,34 @@ final class OBSManager {
         let video = OBSSceneWriter.videoSourceName
         let audio = OBSSceneWriter.audioSourceName
         let bundle = OBSSceneWriter.wowBundleID
+        let useWindow = opts.capture == .application && window != nil && !fallbackSignatures.contains(window!.signature)
         do {
-            // 항상 디스플레이 캡처. WoW 가 있는 디스플레이를 잡고, 잘라내기는 fitCanvasToSource 가 한다.
-            var final: [String: Any] = ["show_cursor": opts.showCursor, "hide_obs": true, "type": 0]
-            if let uuid = window?.displayUUID { final["display_uuid"] = uuid }
-            _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": final, "overlay": true])
+            if useWindow, let w = window {
+                // 진짜 창 캡처. 낡은 창 ID 로 멈춘 스트림을 확실히 새로 잡으려고 window 를 0 으로 뒀다 다시 넣는다.
+                _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": ["type": 1, "window": 0], "overlay": true])
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                _ = try await client.request("SetInputSettings", data: [
+                    "inputName": video,
+                    "inputSettings": ["type": 1, "window": w.windowID, "show_empty_names": false, "show_hidden_windows": true, "show_cursor": opts.showCursor, "hide_obs": true],
+                    "overlay": true,
+                ])
+                appliedKind = .window
+                log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · 창 캡처 (id \(w.windowID))")
+                onCaptureHint?(nil)
+            } else {
+                // 디스플레이 캡처 (디스플레이 고정 모드, 또는 창 캡처 대체)
+                var final: [String: Any] = ["show_cursor": opts.showCursor, "hide_obs": true, "type": 0]
+                if let uuid = window?.displayUUID { final["display_uuid"] = uuid }
+                _ = try await client.request("SetInputSettings", data: ["inputName": video, "inputSettings": final, "overlay": true])
+                appliedKind = .display
+                let why = (opts.capture == .application) ? "디스플레이 캡처 + 창 영역 크롭 (창 캡처 대체)" : "디스플레이 캡처"
+                if let w = window {
+                    log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · \(why)")
+                } else {
+                    log("캡처 설정 적용 (\(reason))")
+                }
+                onCaptureHint?(opts.capture == .application ? "창 캡처가 안 돼 디스플레이를 잘라 녹화합니다. WoW 그래픽을 '창(모드)' 로 두면 창만 정확히 잡힙니다." : nil)
+            }
 
             // 오디오는 처음 한 번만 다시 잡는다 (매번 하면 소리가 끊긴다)
             if appliedSignature == nil {
@@ -478,16 +539,7 @@ final class OBSManager {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 _ = try await client.request("SetInputSettings", data: ["inputName": audio, "inputSettings": ["type": 1, "application": bundle], "overlay": true])
             }
-
-            if let w = window {
-                let how = (opts.capture == .display || w.isFullscreenSized) ? "디스플레이 캡처" : "디스플레이 캡처 + 창 영역 크롭"
-                log("캡처 대상 갱신 (\(reason)): WoW 창 \(Int(w.bounds.width))x\(Int(w.bounds.height)) · \(how)")
-                onCaptureHint?(nil)
-            } else {
-                log("캡처 설정 적용 (\(reason))")
-            }
-            // 즉시 한 번 잘라내기 반영
-            await fitCanvasToSource()
+            await fitCanvasToSource(window: window)
         } catch {
             log("캡처 대상 갱신 실패: \(error.localizedDescription)")
         }
