@@ -266,6 +266,8 @@ struct OBSSceneOptions: Equatable {
     var gameAudio: Bool
     var mic: Bool
     var showCursor: Bool
+    /// 친구 음성(디스코드 등) 앱 번들 ID. nil 이면 녹음하지 않는다.
+    var voiceChat: String? = nil
 }
 
 enum OBSSceneWriter {
@@ -273,6 +275,7 @@ enum OBSSceneWriter {
     static let videoSourceName = "WoW 화면"
     static let audioSourceName = "WoW 소리"
     static let micSourceName = "마이크"
+    static let voiceSourceName = "친구 음성"
     static let wowBundleID = "com.blizzard.worldofwarcraft"
 
     static func ensure(options: OBSSceneOptions) throws {
@@ -310,8 +313,15 @@ enum OBSSceneWriter {
 
         // 오디오 소스는 장면 아이템이어야 믹서에 들어간다 (아니면 OBS 가 저장 시 버린다)
         let audioItem = audioSceneItem(uuid: audioUUID, id: 2)
+        var items: [[String: Any]] = [sceneItem, audioItem]
+        var idCounter = 2
+        let voiceUUID = UUID().uuidString.lowercased()
+        if options.voiceChat != nil {
+            idCounter += 1
+            items.append(audioSceneItem(name: voiceSourceName, uuid: voiceUUID, id: idCounter))
+        }
         let scene = source(name: sceneName, id: "scene", uuid: sceneUUID, settings: [
-            "id_counter": 2, "custom_size": false, "items": [sceneItem, audioItem],
+            "id_counter": idCounter, "custom_size": false, "items": items,
         ])
         var video = source(name: videoSourceName, id: "screen_capture", uuid: videoUUID, settings: videoSettings(options))
         video["muted"] = true // 게임 소리는 별도 오디오 소스로 받는다 (이중 녹음 방지)
@@ -332,6 +342,11 @@ enum OBSSceneWriter {
             "sources": [scene, video, audio],
             "modules": [:] as [String: Any],
         ]
+        if let voiceApp = options.voiceChat {
+            var list = json["sources"] as! [[String: Any]]
+            list.append(appAudioSource(name: voiceSourceName, bundleID: voiceApp, uuid: voiceUUID))
+            json["sources"] = list
+        }
         if options.mic { json["AuxAudioDevice1"] = micSource() }
         return json
     }
@@ -349,6 +364,13 @@ enum OBSSceneWriter {
                 sources[i]["settings"] = settings
             case audioSourceName:
                 sources[i]["enabled"] = options.gameAudio
+            case voiceSourceName:
+                if let app = options.voiceChat {
+                    sources[i]["enabled"] = true
+                    var st = sources[i]["settings"] as? [String: Any] ?? [:]
+                    st["type"] = 1; st["application"] = app
+                    sources[i]["settings"] = st
+                }
             default:
                 break
             }
@@ -367,6 +389,31 @@ enum OBSSceneWriter {
                 items.append(audioSceneItem(uuid: audioUUID, id: nextID))
                 settings["items"] = items
                 settings["id_counter"] = nextID
+                sources[si]["settings"] = settings
+            }
+        }
+        // 친구 음성 소스 추가/제거
+        if let voiceApp = options.voiceChat {
+            if !sources.contains(where: { $0["name"] as? String == voiceSourceName }) {
+                let uuid = UUID().uuidString.lowercased()
+                sources.append(appAudioSource(name: voiceSourceName, bundleID: voiceApp, uuid: uuid))
+                if let si = sources.firstIndex(where: { $0["id"] as? String == "scene" && $0["name"] as? String == sceneName }) {
+                    var settings = sources[si]["settings"] as? [String: Any] ?? [:]
+                    var items = settings["items"] as? [[String: Any]] ?? []
+                    let nextID = (settings["id_counter"] as? Int ?? items.count) + 1
+                    items.append(audioSceneItem(name: voiceSourceName, uuid: uuid, id: nextID))
+                    settings["items"] = items
+                    settings["id_counter"] = nextID
+                    sources[si]["settings"] = settings
+                }
+            }
+        } else {
+            sources.removeAll { $0["name"] as? String == voiceSourceName }
+            if let si = sources.firstIndex(where: { $0["id"] as? String == "scene" && $0["name"] as? String == sceneName }) {
+                var settings = sources[si]["settings"] as? [String: Any] ?? [:]
+                var items = settings["items"] as? [[String: Any]] ?? []
+                items.removeAll { $0["name"] as? String == voiceSourceName }
+                settings["items"] = items
                 sources[si]["settings"] = settings
             }
         }
@@ -397,9 +444,9 @@ enum OBSSceneWriter {
     }
 
     /// 사용자가 원래 OBS 에서 쓰던 마이크 장치 (기본 장면 모음의 마이크/Aux). 없으면 nil.
-    static func audioSceneItem(uuid: String, id: Int) -> [String: Any] {
+    static func audioSceneItem(name: String = audioSourceName, uuid: String, id: Int) -> [String: Any] {
         [
-            "name": audioSourceName, "source_uuid": uuid, "id": id,
+            "name": name, "source_uuid": uuid, "id": id,
             "visible": true, "locked": false, "rot": 0.0,
             "pos": ["x": 0.0, "y": 0.0], "scale": ["x": 1.0, "y": 1.0],
             "align": 5, "bounds_type": 0, "bounds_align": 0,
@@ -457,6 +504,11 @@ enum OBSSceneWriter {
             ["name": limiterFilterName, "id": "limiter_filter", "versioned_id": "limiter_filter",
              "enabled": true, "settings": ["threshold": -3.0, "release_time": 60]],
         ]
+    }
+
+    /// 특정 앱의 소리만 잡는 오디오 소스 (ScreenCaptureKit 앱 오디오 캡처)
+    static func appAudioSource(name: String, bundleID: String, uuid: String) -> [String: Any] {
+        source(name: name, id: "sck_audio_capture", uuid: uuid, settings: ["type": 1, "application": bundleID])
     }
 
     static func micSource() -> [String: Any] {

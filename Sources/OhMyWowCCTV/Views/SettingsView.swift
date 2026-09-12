@@ -24,6 +24,9 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.leaveGraceSeconds) private var leaveGraceSeconds = 30
     @AppStorage(Prefs.Key.micDevice) private var micDevice = "default"
     @AppStorage(Prefs.Key.micGainDb) private var micGainDb = 0
+    @AppStorage(Prefs.Key.voiceChatEnabled) private var voiceChatEnabled = true
+    @AppStorage(Prefs.Key.voiceChatApp) private var voiceChatApp = VoiceChatApps.defaultBundleID()
+    @State private var voiceApps: [VoiceChatApps.App] = []
     @State private var inputDevices: [AudioInputDevices.Device] = []
 
     @State private var addonMessage = ""
@@ -88,6 +91,20 @@ struct SettingsView: View {
                             .onChange(of: micGainDb) { _, _ in c.applyOBSSettings(); c.applyMicGain() }
                     }
                     Text("원래 OBS 에서 마이크에 걸어 둔 필터(게이트·억제·컴프레서·리미터)를 그대로 가져오고, 이 앱은 그 앞에 증폭만 더합니다. 증폭이 앞에 있어야 게이트가 열립니다. CCTV 모니터의 '자동 맞춤'으로 말하면서 값을 정할 수 있습니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("친구 음성 녹음 (디스코드 등 통화 앱 소리)", isOn: $voiceChatEnabled)
+                    .onChange(of: voiceChatEnabled) { _, _ in c.applyOBSSettings(); c.applyVoiceChat() }
+                if voiceChatEnabled {
+                    Picker("음성 앱", selection: $voiceChatApp) {
+                        ForEach(voiceApps, id: \.bundleID) { a in Text(a.name).tag(a.bundleID) }
+                        if !voiceApps.contains(where: { $0.bundleID == voiceChatApp }) {
+                            Text(VoiceChatApps.displayName(for: voiceChatApp)).tag(voiceChatApp)
+                        }
+                    }
+                    .onAppear { voiceApps = VoiceChatApps.installed() }
+                    .onChange(of: voiceChatApp) { _, _ in c.applyOBSSettings(); c.applyVoiceChat() }
+                    Text("그 앱에서 나오는 소리만 따로 잡습니다. 내 목소리는 마이크로, 게임 소리는 WoW 소리로 들어가서 셋이 자연스럽게 합쳐집니다.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("마우스 커서 표시", isOn: $showCursor)

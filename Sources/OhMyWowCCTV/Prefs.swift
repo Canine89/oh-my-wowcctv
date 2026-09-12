@@ -24,6 +24,8 @@ enum Prefs {
         static let leaveGraceSeconds = "leaveGraceSeconds"
         static let micDevice = "micDevice"          // "default" = macOS 시스템 기본 입력, 아니면 CoreAudio UID
         static let micGainDb = "micGainDb"          // OBS 게인 필터 (0~30 dB)
+        static let voiceChatEnabled = "voiceChatEnabled"  // 친구 음성(디스코드 등) 녹음
+        static let voiceChatApp = "voiceChatApp"          // 그 앱의 번들 ID
     }
 
     static let defaults: [String: Any] = [
@@ -48,6 +50,8 @@ enum Prefs {
         Key.leaveGraceSeconds: 30,
         Key.micDevice: "default",
         Key.micGainDb: 0,
+        Key.voiceChatEnabled: true,
+        Key.voiceChatApp: VoiceChatApps.defaultBundleID(),
     ]
 
     static func register() {
@@ -73,6 +77,13 @@ enum Prefs {
     static var cropTitleBar: Bool { ud.bool(forKey: Key.cropTitleBar) }
     static var previewFPS: Int { min(60, max(5, ud.integer(forKey: Key.previewFPS))) }
     static var leaveGraceSeconds: Int { max(5, ud.integer(forKey: Key.leaveGraceSeconds)) }
+    /// 친구 음성 앱 번들 ID. 꺼져 있으면 nil.
+    static var voiceChatApp: String? {
+        guard ud.bool(forKey: Key.voiceChatEnabled) else { return nil }
+        let v = ud.string(forKey: Key.voiceChatApp) ?? ""
+        return v.isEmpty ? nil : v
+    }
+
     static var micGainDb: Int { min(30, max(0, ud.integer(forKey: Key.micGainDb))) }
     static var micDevice: String { let v = ud.string(forKey: Key.micDevice) ?? "default"; return v.isEmpty ? "default" : v }
 
@@ -81,7 +92,8 @@ enum Prefs {
             capture: OBSSceneOptions.Capture(rawValue: ud.string(forKey: Key.captureMode) ?? "") ?? .application,
             gameAudio: ud.bool(forKey: Key.gameAudio),
             mic: ud.bool(forKey: Key.micEnabled),
-            showCursor: ud.bool(forKey: Key.showCursor)
+            showCursor: ud.bool(forKey: Key.showCursor),
+            voiceChat: voiceChatApp
         )
     }
 }

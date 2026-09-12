@@ -330,7 +330,7 @@ final class OBSManager {
             while !Task.isCancelled {
                 guard let self else { return }
                 if self.client.state == .connected {
-                    if !micChecked { micChecked = true; await self.ensureMicDevice(); await self.applyMicGain() }
+                    if !micChecked { micChecked = true; await self.ensureMicDevice(); await self.applyMicGain(); await self.ensureVoiceSource() }
                     if let info = WoWWindowLocator.find(bundleID: wowBundleID) {
                         waitedForWindow = false
                         if info.signature != self.appliedSignature {
@@ -429,6 +429,40 @@ final class OBSManager {
             }
         }
         return false
+    }
+
+    // MARK: 친구 음성 (디스코드 등)
+
+    /// 실행 중인 OBS 에 '친구 음성' 앱 오디오 소스를 만들거나 갱신한다 (꺼져 있으면 제거).
+    func ensureVoiceSource() async {
+        guard client.state == .connected else { return }
+        let name = OBSSceneWriter.voiceSourceName
+        do {
+            let list = try await client.request("GetInputList", timeout: 3)
+            let exists = (list["inputs"] as? [[String: Any]] ?? []).contains { $0["inputName"] as? String == name }
+            guard let app = Prefs.voiceChatApp else {
+                if exists {
+                    _ = try await client.request("RemoveInput", data: ["inputName": name])
+                    log("친구 음성 소스를 껐습니다")
+                }
+                return
+            }
+            let settings: [String: Any] = ["type": 1, "application": app]
+            if exists {
+                let cur = try? await client.request("GetInputSettings", data: ["inputName": name], timeout: 3)
+                let curApp = (cur?["inputSettings"] as? [String: Any])?["application"] as? String
+                if curApp == app { return }
+                _ = try await client.request("SetInputSettings", data: ["inputName": name, "inputSettings": settings, "overlay": true])
+            } else {
+                _ = try await client.request("CreateInput", data: [
+                    "sceneName": OBSSceneWriter.sceneName, "inputName": name,
+                    "inputKind": "sck_audio_capture", "inputSettings": settings, "sceneItemEnabled": true,
+                ])
+            }
+            log("친구 음성 캡처: \(VoiceChatApps.displayName(for: app))")
+        } catch {
+            log("친구 음성 소스 적용 실패: \(error.localizedDescription)")
+        }
     }
 
     // MARK: 마이크
